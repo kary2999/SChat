@@ -4,8 +4,25 @@ import { TrackerClient } from './tracker.js';
 const RTC_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' }
-  ]
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:openrelay.metered.ca:80' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
+  ],
+  iceCandidatePoolSize: 4
 };
 
 const MAX_OFFERS = 5;
@@ -245,7 +262,13 @@ export class Mesh extends EventTarget {
     const pc = this._createPC();
     pc.ondatachannel = (e) => this._setupDC(e.channel, null, peerId);
     pc.ontrack = (e) => this._emit('track', { peerId, track: e.track, streams: e.streams });
-    pc.onconnectionstatechange = () => log('pc(answerer)', pc.connectionState, peerId.slice(0, 8));
+    pc.onconnectionstatechange = () => {
+      log('pc(answerer)', pc.connectionState, peerId.slice(0, 8));
+      this._emit('peer-state', { peerId, state: pc.connectionState });
+      if (pc.connectionState === 'failed') {
+        this._emit('peer-fail', { peerId, reason: 'ICE 协商失败 — 可能 NAT 太严格' });
+      }
+    };
     pc.oniceconnectionstatechange = () => log('ice(answerer)', pc.iceConnectionState, peerId.slice(0, 8));
 
     this.peers.set(peerId, {
@@ -300,7 +323,13 @@ export class Mesh extends EventTarget {
     log('processing answer from', peerId.slice(0, 8));
     const { pc, dc } = pending;
     pc.ontrack = (e) => this._emit('track', { peerId, track: e.track, streams: e.streams });
-    pc.onconnectionstatechange = () => log('pc(offerer)', pc.connectionState, peerId.slice(0, 8));
+    pc.onconnectionstatechange = () => {
+      log('pc(offerer)', pc.connectionState, peerId.slice(0, 8));
+      this._emit('peer-state', { peerId, state: pc.connectionState });
+      if (pc.connectionState === 'failed') {
+        this._emit('peer-fail', { peerId, reason: 'ICE 协商失败 — 可能 NAT 太严格' });
+      }
+    };
     pc.oniceconnectionstatechange = () => log('ice(offerer)', pc.iceConnectionState, peerId.slice(0, 8));
 
     this.peers.set(peerId, {
@@ -450,7 +479,8 @@ export class Mesh extends EventTarget {
         }
       };
       pc.addEventListener('icegatheringstatechange', check);
-      setTimeout(resolve, 5000);
+      // 8s — enough time for TURN candidates to be gathered on slow mobile networks
+      setTimeout(resolve, 8000);
     });
   }
 

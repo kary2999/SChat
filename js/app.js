@@ -103,6 +103,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     refreshPeerList();
   });
 
+  mesh.addEventListener('peer-fail', (e) => {
+    addSystemMessage(`节点 ${e.detail.peerId.slice(0, 8)} 连接失败：${e.detail.reason}`);
+  });
+
   mesh.addEventListener('kicked', (e) => {
     addSystemMessage('你被房主踢出了');
     showScreen('join-screen');
