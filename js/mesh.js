@@ -47,8 +47,10 @@ export class Mesh extends EventTarget {
 
   async init(nickname) {
     this.nickname = nickname || 'anon-' + randomId(3);
-    this.peerId = localStorage.getItem('schat_peer_id') || randomId(20);
-    localStorage.setItem('schat_peer_id', this.peerId);
+    // peerId is per-tab/session so the same browser can open multiple windows.
+    // Persistent identity is the ECDH public-key fingerprint, not peerId.
+    this.peerId = sessionStorage.getItem('schat_peer_id') || randomId(20);
+    sessionStorage.setItem('schat_peer_id', this.peerId);
     this.keyPair = await generateKeyPair();
     this.pubKeyBytes = await exportPublicKey(this.keyPair);
     this.pubFp = await fingerprint(this.pubKeyBytes);
@@ -59,10 +61,12 @@ export class Mesh extends EventTarget {
     this.channelName = channelName;
 
     this._loadBanList();
+    // Owner flag is per-tab session — opening a 2nd window in the same browser
+    // for testing must NOT auto-promote that window to owner.
     if (asOwner) {
-      localStorage.setItem(ownerKey(channelName), '1');
+      sessionStorage.setItem(ownerKey(channelName), '1');
     }
-    this.isOwner = localStorage.getItem(ownerKey(channelName)) === '1';
+    this.isOwner = sessionStorage.getItem(ownerKey(channelName)) === '1';
     this.ownerFp = this.isOwner ? this.pubFp : '';
 
     const hash = await channelHash(channelName, password);
