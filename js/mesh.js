@@ -167,7 +167,8 @@ export class Mesh extends EventTarget {
       this._emit('track', { peerId, track: e.track, streams: e.streams });
     };
 
-    await pc.setRemoteDescription({ type: 'offer', sdp });
+    const offerDesc = typeof sdp === 'string' ? { type: 'offer', sdp } : sdp;
+    await pc.setRemoteDescription(offerDesc);
     const answer = await pc.createAnswer();
     await pc.setLocalDescription(answer);
     await this._waitIce(pc);
@@ -198,7 +199,8 @@ export class Mesh extends EventTarget {
 
     log('got answer from', peerId.slice(0, 8), '- setting remote desc');
     const { pc, dc } = pending;
-    await pc.setRemoteDescription({ type: 'answer', sdp });
+    const answerDesc = typeof sdp === 'string' ? { type: 'answer', sdp } : sdp;
+    await pc.setRemoteDescription(answerDesc);
 
     pc.onconnectionstatechange = () => log('pc state:', pc.connectionState, 'peer:', peerId.slice(0, 8));
     pc.oniceconnectionstatechange = () => log('ice state:', pc.iceConnectionState, 'peer:', peerId.slice(0, 8));
