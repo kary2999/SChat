@@ -6,8 +6,11 @@ let tilesEl = null;
 let peerCountEl = null;
 let channelNameEl = null;
 let footerTtlEl = null;
+let peerListEl = null;
+let peerPanelEl = null;
 const messageTimers = new Map();
 let msgIdCounter = 0;
+let _onKickHandler = null;
 
 export function initUI() {
   feedEl = document.getElementById('feed');
@@ -15,6 +18,8 @@ export function initUI() {
   peerCountEl = document.getElementById('peer-count');
   channelNameEl = document.getElementById('channel-name');
   footerTtlEl = document.getElementById('footer-ttl');
+  peerListEl = document.getElementById('peer-list');
+  peerPanelEl = document.getElementById('peer-panel');
 }
 
 export function showScreen(id) {
@@ -31,22 +36,96 @@ export function updateChannelName(name) {
   if (channelNameEl) channelNameEl.textContent = name;
 }
 
+export function setOwnerBadge(isOwner) {
+  const badge = document.getElementById('owner-badge');
+  if (badge) badge.style.display = isOwner ? 'inline-block' : 'none';
+}
+
+export function onKickPeer(handler) { _onKickHandler = handler; }
+
+export function renderPeerList(peers, { selfNick, selfPeerId, isOwner }) {
+  if (!peerListEl) return;
+  peerListEl.innerHTML = '';
+
+  const selfRow = document.createElement('div');
+  selfRow.className = 'peer-row self';
+  const selfDot = document.createElement('span'); selfDot.className = 'peer-dot online';
+  const selfName = document.createElement('span'); selfName.className = 'peer-name';
+  selfName.textContent = (selfNick || '我') + ' (我)';
+  const selfId = document.createElement('span'); selfId.className = 'peer-id';
+  selfId.textContent = selfPeerId ? selfPeerId.slice(0, 8) : '';
+  selfRow.appendChild(selfDot);
+  selfRow.appendChild(selfName);
+  selfRow.appendChild(selfId);
+  if (isOwner) {
+    const tag = document.createElement('span'); tag.className = 'peer-owner';
+    tag.textContent = '房主'; selfRow.appendChild(tag);
+  }
+  peerListEl.appendChild(selfRow);
+
+  for (const [pid, p] of peers) {
+    const row = document.createElement('div');
+    row.className = 'peer-row';
+
+    const dot = document.createElement('span');
+    const ready = p.aesKey && p.dc && p.dc.readyState === 'open';
+    dot.className = 'peer-dot ' + (ready ? 'online' : 'pending');
+    row.appendChild(dot);
+
+    const name = document.createElement('span');
+    name.className = 'peer-name';
+    name.textContent = sanitizeName(p.nickname || pid.slice(0, 8));
+    row.appendChild(name);
+
+    const idSpan = document.createElement('span');
+    idSpan.className = 'peer-id';
+    idSpan.textContent = (p.fp || pid.slice(0, 8));
+    row.appendChild(idSpan);
+
+    if (p.isOwner) {
+      const tag = document.createElement('span');
+      tag.className = 'peer-owner';
+      tag.textContent = '房主';
+      row.appendChild(tag);
+    }
+
+    if (isOwner && !p.isOwner) {
+      const kick = document.createElement('button');
+      kick.className = 'peer-kick';
+      kick.title = '踢出并封禁';
+      kick.textContent = '✕';
+      kick.addEventListener('click', () => {
+        if (_onKickHandler) _onKickHandler(pid);
+      });
+      row.appendChild(kick);
+    }
+
+    peerListEl.appendChild(row);
+  }
+}
+
+export function togglePeerPanel(force) {
+  if (!peerPanelEl) return;
+  if (typeof force === 'boolean') {
+    peerPanelEl.classList.toggle('open', force);
+  } else {
+    peerPanelEl.classList.toggle('open');
+  }
+}
+
 export function addSystemMessage(text) {
   const id = 'msg-' + (++msgIdCounter);
   const el = document.createElement('div');
   el.className = 'msg-line sys';
   el.id = id;
-
   const ts = document.createElement('span');
   ts.className = 'ts';
   ts.textContent = '[' + timeStr() + ']';
   el.appendChild(ts);
-
   const body = document.createElement('span');
   body.className = 'body';
   body.textContent = ' ' + text;
   el.appendChild(body);
-
   feedEl.appendChild(el);
   scrollFeed();
   scheduleRemove(id, MSG_TTL);
@@ -65,7 +144,7 @@ export function addTextMessage({ nick, text, isSelf = false, burn = false }) {
 
   const who = document.createElement('span');
   who.className = 'who';
-  who.textContent = (isSelf ? 'you' : sanitizeName(nick)) + '>';
+  who.textContent = (isSelf ? '我' : sanitizeName(nick)) + '>';
   el.appendChild(who);
 
   const body = document.createElement('span');
@@ -73,7 +152,7 @@ export function addTextMessage({ nick, text, isSelf = false, burn = false }) {
   el.appendChild(body);
 
   if (burn && !isSelf) {
-    body.textContent = ' [ \u{1F525} tap to read ]';
+    body.textContent = ' [ \u{1F525} 点击查看 · 阅后即焚 ]';
     body.dataset.realText = text;
     body.addEventListener('click', () => {
       body.textContent = ' ' + text;
@@ -105,13 +184,13 @@ export function addImageMessage({ nick, dataUrl, isSelf = false, burn = false })
 
   const who = document.createElement('span');
   who.className = 'who';
-  who.textContent = (isSelf ? 'you' : sanitizeName(nick)) + '>';
+  who.textContent = (isSelf ? '我' : sanitizeName(nick)) + '>';
   el.appendChild(who);
 
   if (burn && !isSelf) {
     const body = document.createElement('span');
     body.className = 'body';
-    body.textContent = ' [ \u{1F525} tap to view image ]';
+    body.textContent = ' [ \u{1F525} 点击查看图片 · 阅后即焚 ]';
     el.appendChild(body);
     body.addEventListener('click', () => {
       body.remove();
@@ -146,12 +225,12 @@ export function addVoiceMessage({ nick, dataUrl, duration, isSelf = false }) {
 
   const who = document.createElement('span');
   who.className = 'who';
-  who.textContent = (isSelf ? 'you' : sanitizeName(nick)) + '>';
+  who.textContent = (isSelf ? '我' : sanitizeName(nick)) + '>';
   el.appendChild(who);
 
   const body = document.createElement('span');
   body.className = 'body';
-  body.textContent = ` [ \u{1F3A4} ${duration.toFixed(1)}s voice ]`;
+  body.textContent = ` [ \u{1F3A4} 语音 ${duration.toFixed(1)}s ]`;
   el.appendChild(body);
 
   const bar = document.createElement('span');
@@ -176,7 +255,7 @@ export function addVoiceMessage({ nick, dataUrl, duration, isSelf = false }) {
 function createSafeImage(dataUrl) {
   if (!dataUrl.startsWith('data:image/')) {
     const span = document.createElement('span');
-    span.textContent = '[invalid image]';
+    span.textContent = '[无效图片]';
     return span;
   }
   const img = document.createElement('img');
@@ -218,8 +297,6 @@ function timeStr() {
 function sanitizeName(name) {
   return (name || 'anon').replace(/[<>&"'/]/g, '').slice(0, 20);
 }
-
-/* ======= VIDEO TILES ======= */
 
 const videoTiles = new Map();
 

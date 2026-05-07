@@ -9,6 +9,8 @@ const RTC_CONFIG = {
 };
 
 const MAX_OFFERS = 5;
+const OFFER_CACHE_MS = 5000;
+const PENDING_OFFER_TTL = 90_000;
 const log = (...a) => console.log('[mesh]', ...a);
 
 function stripLocalCandidates(sdp) {
@@ -19,6 +21,9 @@ function stripLocalCandidates(sdp) {
   }).join('\r\n');
 }
 
+function banKey(channelName) { return 'schat_ban_' + channelName; }
+function ownerKey(channelName) { return 'schat_owner_' + channelName; }
+
 export class Mesh extends EventTarget {
   constructor() {
     super();
@@ -26,12 +31,18 @@ export class Mesh extends EventTarget {
     this.nickname = '';
     this.keyPair = null;
     this.pubKeyBytes = null;
+    this.pubFp = '';
     this.peers = new Map();
     this._tracker = null;
     this._pendingOffers = new Map();
-    this._knownPeerIds = new Set();
     this._localStreams = { audio: null, video: null };
     this.channelName = '';
+    this.isOwner = false;
+    this.ownerFp = '';
+    this._banList = new Set();
+    this._cachedOffers = null;
+    this._cachedOffersAt = 0;
+    this._cleanupTimer = null;
   }
 
   async init(nickname) {
@@ -40,19 +51,30 @@ export class Mesh extends EventTarget {
     localStorage.setItem('schat_peer_id', this.peerId);
     this.keyPair = await generateKeyPair();
     this.pubKeyBytes = await exportPublicKey(this.keyPair);
+    this.pubFp = await fingerprint(this.pubKeyBytes);
   }
 
-  async join(channelName, password = '') {
+  async join(channelName, password = '', { asOwner = false } = {}) {
     this.leave();
     this.channelName = channelName;
-    const hash = await channelHash(channelName, password);
 
-    log('joining channel', channelName, 'hash', hash.slice(0, 12), 'peerId', this.peerId.slice(0, 8));
+    this._loadBanList();
+    if (asOwner) {
+      localStorage.setItem(ownerKey(channelName), '1');
+    }
+    this.isOwner = localStorage.getItem(ownerKey(channelName)) === '1';
+    this.ownerFp = this.isOwner ? this.pubFp : '';
+
+    const hash = await channelHash(channelName, password);
+    log('joining', channelName, 'hash', hash.slice(0, 12), 'owner?', this.isOwner);
+
     this._tracker = new TrackerClient(hash, this.peerId);
     this._tracker.addEventListener('offer', (e) => this._onOffer(e.detail));
     this._tracker.addEventListener('answer', (e) => this._onAnswer(e.detail));
     this._tracker.connect(() => this._makeOffers());
-    this._emit('joined', { channel: channelName });
+
+    this._cleanupTimer = setInterval(() => this._cleanupPending(), 30_000);
+    this._emit('joined', { channel: channelName, isOwner: this.isOwner });
   }
 
   leave() {
@@ -60,18 +82,56 @@ export class Mesh extends EventTarget {
       this._tracker.disconnect();
       this._tracker = null;
     }
-    for (const [id, peer] of this.peers) {
-      this._closePeer(id);
-    }
+    if (this._cleanupTimer) { clearInterval(this._cleanupTimer); this._cleanupTimer = null; }
+
+    for (const [id] of this.peers) this._closePeer(id);
     this.peers.clear();
+    for (const [, p] of this._pendingOffers) {
+      try { p.pc.close(); } catch {}
+    }
     this._pendingOffers.clear();
-    this._knownPeerIds.clear();
+    this._cachedOffers = null;
+    this._cachedOffersAt = 0;
     this.channelName = '';
+    this.isOwner = false;
+    this.ownerFp = '';
+    this._banList = new Set();
+  }
+
+  _loadBanList() {
+    try {
+      const raw = localStorage.getItem(banKey(this.channelName));
+      this._banList = new Set(raw ? JSON.parse(raw) : []);
+    } catch { this._banList = new Set(); }
+  }
+  _saveBanList() {
+    try {
+      localStorage.setItem(banKey(this.channelName), JSON.stringify([...this._banList]));
+    } catch {}
+  }
+  isBanned(peerId) { return this._banList.has(peerId); }
+
+  async kickPeer(peerId, { ban = true, broadcast = true } = {}) {
+    if (!this.isOwner) return;
+    if (ban) {
+      this._banList.add(peerId);
+      this._saveBanList();
+    }
+    if (broadcast) {
+      await this.broadcast({ t: 'ban', target: peerId, _owner: this.pubFp, _ban: ban });
+    }
+    this._closePeer(peerId);
+    this._emit('peer-leave', { peerId });
+  }
+
+  unban(peerId) {
+    this._banList.delete(peerId);
+    this._saveBanList();
   }
 
   async broadcast(payload) {
     const json = JSON.stringify(payload);
-    for (const [id, peer] of this.peers) {
+    for (const [, peer] of this.peers) {
       if (!peer.aesKey || !peer.dc || peer.dc.readyState !== 'open') continue;
       try {
         const ct = await encrypt(peer.aesKey, json);
@@ -80,28 +140,13 @@ export class Mesh extends EventTarget {
     }
   }
 
-  async broadcastBinary(payload) {
-    for (const [id, peer] of this.peers) {
-      if (!peer.aesKey || !peer.dc || peer.dc.readyState !== 'open') continue;
-      try {
-        const ct = await encrypt(peer.aesKey, payload);
-        peer.dc.send(ct);
-      } catch {}
-    }
-  }
-
   setAudioStream(stream) {
     this._localStreams.audio = stream;
-    for (const [, peer] of this.peers) {
-      this._syncTracks(peer);
-    }
+    for (const [, peer] of this.peers) this._syncTracks(peer);
   }
-
   setVideoStream(stream) {
     this._localStreams.video = stream;
-    for (const [, peer] of this.peers) {
-      this._syncTracks(peer);
-    }
+    for (const [, peer] of this.peers) this._syncTracks(peer);
   }
 
   _syncTracks(peer) {
@@ -114,7 +159,6 @@ export class Mesh extends EventTarget {
     if (this._localStreams.video) {
       for (const t of this._localStreams.video.getTracks()) allTracks.push(t);
     }
-
     for (const track of allTracks) {
       const existing = senders.find(s => s.track && s.track.kind === track.kind);
       if (existing) {
@@ -127,6 +171,11 @@ export class Mesh extends EventTarget {
   }
 
   async _makeOffers() {
+    const now = Date.now();
+    if (this._cachedOffers && (now - this._cachedOffersAt < OFFER_CACHE_MS)) {
+      log('returning cached offers (', this._cachedOffers.length, ')');
+      return this._cachedOffers;
+    }
     log('creating', MAX_OFFERS, 'offers...');
     const offers = [];
     for (let i = 0; i < MAX_OFFERS; i++) {
@@ -140,17 +189,26 @@ export class Mesh extends EventTarget {
       await this._waitIce(pc);
 
       const sdp = stripLocalCandidates(pc.localDescription.sdp);
-      const candidateCount = (sdp.match(/a=candidate:/g) || []).length;
-      if (i === 0) log('offer 0: ICE candidates:', candidateCount);
-
-      this._pendingOffers.set(offerId, { pc, dc });
+      this._pendingOffers.set(offerId, { pc, dc, createdAt: Date.now() });
       offers.push({
         offer_id: offerId,
         offer: { type: 'offer', sdp }
       });
     }
-    log('created', offers.length, 'offers');
+    this._cachedOffers = offers;
+    this._cachedOffersAt = now;
+    log('created & cached', offers.length, 'offers');
     return offers;
+  }
+
+  _cleanupPending() {
+    const cutoff = Date.now() - PENDING_OFFER_TTL;
+    for (const [id, p] of this._pendingOffers) {
+      if (p.createdAt < cutoff) {
+        try { p.pc.close(); } catch {}
+        this._pendingOffers.delete(id);
+      }
+    }
   }
 
   _peerReady(peerId) {
@@ -158,33 +216,39 @@ export class Mesh extends EventTarget {
     return p && p.aesKey && p.dc && p.dc.readyState === 'open';
   }
 
+  _shouldAnswer(peerId) { return this.peerId < peerId; }
+  _shouldOffer(peerId) { return this.peerId > peerId; }
+
   async _onOffer({ peerId, offerId, sdp }) {
     if (peerId === this.peerId) return;
-
+    if (this.isBanned(peerId)) { log('ignoring banned peer offer', peerId.slice(0, 8)); return; }
     if (this._peerReady(peerId)) return;
 
+    if (!this._shouldAnswer(peerId)) {
+      return;
+    }
+
     if (this.peers.has(peerId)) {
-      const isPolite = this.peerId < peerId;
-      if (!isPolite) {
-        log('glare: we are impolite, ignoring offer from', peerId.slice(0, 8));
+      const existing = this.peers.get(peerId);
+      if (existing.role === 'answerer' && existing._answering) {
         return;
       }
-      log('glare: we are polite, replacing connection to', peerId.slice(0, 8));
+      log('replacing prior path to', peerId.slice(0, 8));
       this._closePeer(peerId);
     }
 
-    log('processing offer from', peerId.slice(0, 8));
+    log('answering offer from', peerId.slice(0, 8));
     const pc = this._createPC();
-    pc.ondatachannel = (e) => {
-      this._setupDC(e.channel, null, peerId);
-    };
+    pc.ondatachannel = (e) => this._setupDC(e.channel, null, peerId);
+    pc.ontrack = (e) => this._emit('track', { peerId, track: e.track, streams: e.streams });
+    pc.onconnectionstatechange = () => log('pc(answerer)', pc.connectionState, peerId.slice(0, 8));
+    pc.oniceconnectionstatechange = () => log('ice(answerer)', pc.iceConnectionState, peerId.slice(0, 8));
 
-    pc.ontrack = (e) => {
-      this._emit('track', { peerId, track: e.track, streams: e.streams });
-    };
-
-    pc.onconnectionstatechange = () => log('pc state (answerer):', pc.connectionState, 'peer:', peerId.slice(0, 8));
-    pc.oniceconnectionstatechange = () => log('ice state (answerer):', pc.iceConnectionState, 'peer:', peerId.slice(0, 8));
+    this.peers.set(peerId, {
+      pc, dc: null, aesKey: null, pubKeyBytes: null,
+      nickname: '', fp: '', role: 'answerer', _answering: true, isOwner: false
+    });
+    this._syncTracks(this.peers.get(peerId));
 
     try {
       const offerDesc = typeof sdp === 'string' ? { type: 'offer', sdp } : sdp;
@@ -192,21 +256,12 @@ export class Mesh extends EventTarget {
       const answer = await pc.createAnswer();
       await pc.setLocalDescription(answer);
       await this._waitIce(pc);
-
       const answerSdp = stripLocalCandidates(pc.localDescription.sdp);
-      log('sending answer to', peerId.slice(0, 8), 'candidates:', (answerSdp.match(/a=candidate:/g) || []).length);
-
-      this._tracker.sendAnswer(peerId, offerId, {
-        type: 'answer',
-        sdp: answerSdp
-      });
-
-      this._knownPeerIds.add(peerId);
-      this.peers.set(peerId, { pc, dc: null, aesKey: null, pubKeyBytes: null, nickname: '', fp: '' });
-      this._syncTracks(this.peers.get(peerId));
+      this._tracker.sendAnswer(peerId, offerId, { type: 'answer', sdp: answerSdp });
+      log('sent answer to', peerId.slice(0, 8));
     } catch (e) {
       log('_onOffer error:', e.message);
-      pc.close();
+      this._closePeer(peerId);
     }
   }
 
@@ -215,66 +270,72 @@ export class Mesh extends EventTarget {
     if (!pending) return;
     this._pendingOffers.delete(offerId);
 
+    if (peerId === this.peerId) { try { pending.pc.close(); } catch {} return; }
+    if (this.isBanned(peerId)) { try { pending.pc.close(); } catch {} return; }
+
+    if (!this._shouldOffer(peerId)) {
+      log('role mismatch; we are answerer for', peerId.slice(0, 8), '— dropping incoming answer');
+      try { pending.pc.close(); } catch {}
+      return;
+    }
+
     if (this._peerReady(peerId)) {
-      log('peer', peerId.slice(0, 8), 'already fully connected, skipping answer');
-      pending.pc.close();
+      try { pending.pc.close(); } catch {}
       return;
     }
 
     if (this.peers.has(peerId)) {
       const existing = this.peers.get(peerId);
-      log('replacing incomplete connection to', peerId.slice(0, 8), 'with answer path');
-      try { existing.pc?.close(); } catch {}
-      this.peers.delete(peerId);
+      if (existing.role === 'offerer') {
+        try { pending.pc.close(); } catch {}
+        return;
+      }
+      this._closePeer(peerId);
     }
 
-    log('got answer from', peerId.slice(0, 8), '- setting remote desc');
+    log('processing answer from', peerId.slice(0, 8));
     const { pc, dc } = pending;
+    pc.ontrack = (e) => this._emit('track', { peerId, track: e.track, streams: e.streams });
+    pc.onconnectionstatechange = () => log('pc(offerer)', pc.connectionState, peerId.slice(0, 8));
+    pc.oniceconnectionstatechange = () => log('ice(offerer)', pc.iceConnectionState, peerId.slice(0, 8));
 
-    pc.onconnectionstatechange = () => log('pc state (offerer):', pc.connectionState, 'peer:', peerId.slice(0, 8));
-    pc.oniceconnectionstatechange = () => log('ice state (offerer):', pc.iceConnectionState, 'peer:', peerId.slice(0, 8));
+    this.peers.set(peerId, {
+      pc, dc, aesKey: null, pubKeyBytes: null,
+      nickname: '', fp: '', role: 'offerer', isOwner: false
+    });
+    this._syncTracks(this.peers.get(peerId));
 
     try {
       const answerDesc = typeof sdp === 'string' ? { type: 'answer', sdp } : sdp;
       await pc.setRemoteDescription(answerDesc);
-
-      pc.ontrack = (e) => {
-        this._emit('track', { peerId, track: e.track, streams: e.streams });
-      };
-
-      this._knownPeerIds.add(peerId);
-      this.peers.set(peerId, { pc, dc, aesKey: null, pubKeyBytes: null, nickname: '', fp: '' });
-      this._syncTracks(this.peers.get(peerId));
     } catch (e) {
       log('_onAnswer error:', e.message);
-      pc.close();
+      this._closePeer(peerId);
     }
   }
 
-  _createPC() {
-    const pc = new RTCPeerConnection(RTC_CONFIG);
-    return pc;
-  }
+  _createPC() { return new RTCPeerConnection(RTC_CONFIG); }
 
   _setupDC(dc, offerId, remotePeerId) {
     dc.binaryType = 'arraybuffer';
 
     dc.onopen = async () => {
-      log('datachannel OPEN', remotePeerId?.slice(0, 8) || offerId?.slice(0, 8));
       let pid = remotePeerId;
-      if (!pid && offerId) {
+      if (!pid) {
         for (const [id, peer] of this.peers) {
           if (peer.dc === dc) { pid = id; break; }
         }
       }
+      log('dc OPEN', pid?.slice(0, 8) || offerId?.slice(0, 8));
 
       const keyMsg = JSON.stringify({
         t: 'key',
         pub: Array.from(this.pubKeyBytes),
-        nick: this.nickname
+        nick: this.nickname,
+        peerId: this.peerId,
+        owner: this.isOwner
       });
-      dc.send(new TextEncoder().encode(keyMsg));
-      log('sent ECDH pubkey to', pid?.slice(0, 8));
+      try { dc.send(new TextEncoder().encode(keyMsg)); } catch {}
 
       if (pid && this.peers.has(pid)) {
         this.peers.get(pid).dc = dc;
@@ -291,7 +352,6 @@ export class Mesh extends EventTarget {
         }
       }
       if (!pid) return;
-
       const peer = this.peers.get(pid);
       if (!peer) return;
 
@@ -305,10 +365,13 @@ export class Mesh extends EventTarget {
             peer.aesKey = await deriveKey(this.keyPair.privateKey, theirPub);
             peer.nickname = msg.nick || pid.slice(0, 8);
             peer.fp = await fingerprint(peer.pubKeyBytes);
+            peer.isOwner = !!msg.owner;
+            if (peer.isOwner && !this.ownerFp) this.ownerFp = peer.fp;
             this._emit('peer-ready', {
               peerId: pid,
               nickname: peer.nickname,
-              fingerprint: peer.fp
+              fingerprint: peer.fp,
+              isOwner: peer.isOwner
             });
           }
         } catch {}
@@ -322,6 +385,31 @@ export class Mesh extends EventTarget {
         msg._from = pid;
         msg._nick = peer.nickname;
         msg._fp = peer.fp;
+        msg._fromOwner = peer.isOwner;
+
+        if (msg.t === 'ban') {
+          if (peer.isOwner && peer.fp === this.ownerFp) {
+            const target = msg.target;
+            if (msg._ban !== false) {
+              this._banList.add(target);
+              this._saveBanList();
+            } else {
+              this._banList.delete(target);
+              this._saveBanList();
+            }
+            if (target === this.peerId) {
+              this._emit('kicked', { by: peer.nickname });
+              this.leave();
+              return;
+            }
+            if (this.peers.has(target)) {
+              this._closePeer(target);
+              this._emit('peer-leave', { peerId: target });
+            }
+            return;
+          }
+          return;
+        }
         this._emit('message', msg);
       } catch {}
     };
@@ -346,7 +434,6 @@ export class Mesh extends EventTarget {
     try { peer.dc?.close(); } catch {}
     try { peer.pc?.close(); } catch {}
     this.peers.delete(id);
-    this._knownPeerIds.delete(id);
   }
 
   _waitIce(pc) {

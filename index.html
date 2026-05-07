@@ -2,8 +2,8 @@
 <html lang="zh">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=380">
-<title>SChat</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<title>SChat · 加密点对点聊天</title>
 <link rel="stylesheet" href="css/style.css">
 <script>
   if (new URLSearchParams(location.search).get('mode') === 'expanded') {
@@ -22,7 +22,7 @@
   <div class="screen active" id="join-screen">
     <div class="join-screen">
       <div class="join-logo">SCH<span class="mag">_</span>AT</div>
-      <div class="join-tagline">ENCRYPTED · EPHEMERAL · P2P</div>
+      <div class="join-tagline">加密 · 阅后即焚 · 点对点</div>
 
       <div class="join-divider"></div>
 
@@ -32,34 +32,37 @@
           <span class="quick-join-title"># 知音广场</span>
           <span class="quick-join-arrow">&rarr;</span>
         </div>
-        <div class="quick-join-desc">PUBLIC LOBBY · OPEN CHANNEL · NO PASSWORD</div>
+        <div class="quick-join-desc">公共大厅 · 开放频道 · 无需密码</div>
         <div class="quick-join-meta">
-          <span>E2E ENCRYPTED</span>
-          <span>60s TTL</span>
-          <span>AUTO JOIN</span>
+          <span>端到端加密</span>
+          <span>60秒销毁</span>
+          <span>一键加入</span>
         </div>
       </div>
 
-      <div class="join-or">&#x2500;&#x2500; OR CREATE / JOIN &#x2500;&#x2500;</div>
+      <div class="join-or">&#x2500;&#x2500; 或者创建/加入房间 &#x2500;&#x2500;</div>
 
       <div class="join-form">
         <div class="field">
-          <label>NICKNAME</label>
-          <input id="nick-input" placeholder="your callsign" maxlength="20" autocomplete="off" />
+          <label>昵称</label>
+          <input id="nick-input" placeholder="给自己起个代号" maxlength="20" autocomplete="off" />
         </div>
         <div class="field">
-          <label>CHANNEL</label>
-          <input id="channel-input" placeholder="channel name" maxlength="64" autocomplete="off" />
+          <label>频道名</label>
+          <input id="channel-input" placeholder="频道名称" maxlength="64" autocomplete="off" />
         </div>
         <div class="field">
-          <label>PASSWORD (OPTIONAL)</label>
-          <input id="password-input" type="password" placeholder="leave empty for open channel" maxlength="64" autocomplete="off" />
+          <label>密码（可选）</label>
+          <input id="password-input" type="password" placeholder="留空表示开放频道" maxlength="64" autocomplete="off" />
         </div>
-        <button class="join-btn" id="join-btn">CONNECT ↵</button>
+        <div class="join-btns">
+          <button class="join-btn" id="join-btn">加入 ↵</button>
+          <button class="create-btn" id="create-btn" title="作为房主创建房间，可以踢人封禁">创建房间</button>
+        </div>
       </div>
 
       <div class="join-footer">
-        NO SERVER · NO LOG · NO TRACE · MESSAGES DIE IN 60s
+        无服务器 · 无日志 · 无痕迹 · 消息 60 秒后自动销毁
       </div>
     </div>
   </div>
@@ -68,17 +71,21 @@
   <div class="screen" id="chat-screen">
     <!-- header -->
     <div class="header">
-      <div class="logo">SCH<span class="mag">_</span>AT</div>
+      <div class="logo">
+        SCH<span class="mag">_</span>AT
+        <span id="owner-badge" class="owner-badge" style="display:none">房主</span>
+      </div>
       <div class="ctrl">
-        <button id="expand-btn" title="expand">&#x2922;</button>
-        <button id="leave-btn" title="leave">&#x23FB;</button>
+        <button id="peers-btn" title="成员列表">&#x1F465;</button>
+        <button id="expand-btn" title="放大窗口">&#x2922;</button>
+        <button id="leave-btn" title="离开">&#x23FB;</button>
       </div>
     </div>
 
     <!-- status -->
     <div class="status-bar">
-      <span><span class="blink-dot"></span>SECURE · <span id="peer-count">0</span> PEER</span>
-      <span class="ch">CH <b>#<span id="channel-name">-</span></b></span>
+      <span><span class="blink-dot"></span>已加密 · <span id="peer-count">0</span> 人在线</span>
+      <span class="ch">频道 <b>#<span id="channel-name">-</span></b></span>
       <span>P2P · E2E</span>
     </div>
 
@@ -90,41 +97,52 @@
 
     <!-- toolbar -->
     <div class="toolbar">
-      <button id="mic-btn" title="live mic">&#x1F3A4;</button>
-      <button id="cam-btn" title="camera">&#x1F4F9;</button>
-      <button id="voice-btn" title="voice msg">&#x1F399;</button>
-      <button id="img-btn" title="image">&#x1F5BC;</button>
-      <button id="burn-btn" title="burn mode">&#x1F525;</button>
-      <button id="ch-btn" title="switch channel">#</button>
+      <button id="mic-btn" title="实时麦克风">&#x1F3A4;</button>
+      <button id="cam-btn" title="摄像头">&#x1F4F9;</button>
+      <button id="voice-btn" title="语音消息">&#x1F399;</button>
+      <button id="img-btn" title="发送图片">&#x1F5BC;</button>
+      <button id="burn-btn" title="阅后即焚">&#x1F525;</button>
+      <button id="ch-btn" title="切换频道">#</button>
       <div class="spacer"></div>
     </div>
 
     <!-- input -->
     <div class="input-row">
       <span class="prompt">&gt;</span>
-      <input id="msg-input" placeholder="type or paste..." autocomplete="off" />
-      <button id="paste-btn">PASTE</button>
-      <button id="send-btn" class="send-btn">SEND ↵</button>
+      <input id="msg-input" placeholder="输入或粘贴消息..." autocomplete="off" />
+      <button id="paste-btn">粘贴</button>
+      <button id="send-btn" class="send-btn">发送 ↵</button>
     </div>
 
     <!-- footer -->
     <div class="footer">
-      <span id="footer-ttl">TTL 60s</span>
-      <span>NO DISK</span>
+      <span id="footer-ttl">TTL 60秒</span>
+      <span>不落盘</span>
       <span>P2P · E2E</span>
     </div>
   </div>
 </div>
 
+<!-- Peer list slide-in panel -->
+<div class="peer-panel" id="peer-panel">
+  <div class="peer-panel-header">
+    <span>成员列表</span>
+    <button id="peer-panel-close" title="关闭">&times;</button>
+  </div>
+  <div class="peer-list" id="peer-list"></div>
+  <div class="peer-panel-footer">点击 ✕ 可踢出并封禁（仅房主）</div>
+</div>
+
 <!-- Channel switch modal -->
 <div class="modal-overlay" id="modal-overlay">
   <div class="modal">
-    <h3>SWITCH CHANNEL</h3>
-    <input id="modal-channel" placeholder="channel name" maxlength="64" autocomplete="off" />
-    <input id="modal-password" type="password" placeholder="password (optional)" maxlength="64" autocomplete="off" />
+    <h3>切换频道</h3>
+    <input id="modal-channel" placeholder="频道名称" maxlength="64" autocomplete="off" />
+    <input id="modal-password" type="password" placeholder="密码（可选）" maxlength="64" autocomplete="off" />
     <div class="modal-btns">
-      <button id="modal-cancel">CANCEL</button>
-      <button id="modal-join" class="primary">JOIN</button>
+      <button id="modal-cancel">取消</button>
+      <button id="modal-create">创建为房主</button>
+      <button id="modal-join" class="primary">加入</button>
     </div>
   </div>
 </div>
