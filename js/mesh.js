@@ -153,9 +153,25 @@ export class Mesh extends EventTarget {
     return offers;
   }
 
+  _peerReady(peerId) {
+    const p = this.peers.get(peerId);
+    return p && p.aesKey && p.dc && p.dc.readyState === 'open';
+  }
+
   async _onOffer({ peerId, offerId, sdp }) {
-    if (this.peers.has(peerId) || peerId === this.peerId) return;
-    if (this._knownPeerIds.has(peerId)) return;
+    if (peerId === this.peerId) return;
+
+    if (this._peerReady(peerId)) return;
+
+    if (this.peers.has(peerId)) {
+      const isPolite = this.peerId < peerId;
+      if (!isPolite) {
+        log('glare: we are impolite, ignoring offer from', peerId.slice(0, 8));
+        return;
+      }
+      log('glare: we are polite, replacing connection to', peerId.slice(0, 8));
+      this._closePeer(peerId);
+    }
 
     log('processing offer from', peerId.slice(0, 8));
     const pc = this._createPC();
@@ -167,51 +183,72 @@ export class Mesh extends EventTarget {
       this._emit('track', { peerId, track: e.track, streams: e.streams });
     };
 
-    const offerDesc = typeof sdp === 'string' ? { type: 'offer', sdp } : sdp;
-    await pc.setRemoteDescription(offerDesc);
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    await this._waitIce(pc);
+    pc.onconnectionstatechange = () => log('pc state (answerer):', pc.connectionState, 'peer:', peerId.slice(0, 8));
+    pc.oniceconnectionstatechange = () => log('ice state (answerer):', pc.iceConnectionState, 'peer:', peerId.slice(0, 8));
 
-    const answerSdp = stripLocalCandidates(pc.localDescription.sdp);
-    log('sending answer to', peerId.slice(0, 8), 'candidates:', (answerSdp.match(/a=candidate:/g) || []).length);
+    try {
+      const offerDesc = typeof sdp === 'string' ? { type: 'offer', sdp } : sdp;
+      await pc.setRemoteDescription(offerDesc);
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      await this._waitIce(pc);
 
-    this._tracker.sendAnswer(peerId, offerId, {
-      type: 'answer',
-      sdp: answerSdp
-    });
+      const answerSdp = stripLocalCandidates(pc.localDescription.sdp);
+      log('sending answer to', peerId.slice(0, 8), 'candidates:', (answerSdp.match(/a=candidate:/g) || []).length);
 
-    this._knownPeerIds.add(peerId);
-    this.peers.set(peerId, { pc, dc: null, aesKey: null, pubKeyBytes: null, nickname: '', fp: '' });
-    this._syncTracks(this.peers.get(peerId));
+      this._tracker.sendAnswer(peerId, offerId, {
+        type: 'answer',
+        sdp: answerSdp
+      });
+
+      this._knownPeerIds.add(peerId);
+      this.peers.set(peerId, { pc, dc: null, aesKey: null, pubKeyBytes: null, nickname: '', fp: '' });
+      this._syncTracks(this.peers.get(peerId));
+    } catch (e) {
+      log('_onOffer error:', e.message);
+      pc.close();
+    }
   }
 
   async _onAnswer({ peerId, offerId, sdp }) {
     const pending = this._pendingOffers.get(offerId);
-    if (!pending) { log('no pending offer for', offerId.slice(0, 8)); return; }
+    if (!pending) return;
     this._pendingOffers.delete(offerId);
 
-    if (this.peers.has(peerId)) {
-      log('already connected to', peerId.slice(0, 8), '- closing duplicate');
+    if (this._peerReady(peerId)) {
+      log('peer', peerId.slice(0, 8), 'already fully connected, skipping answer');
       pending.pc.close();
       return;
     }
 
+    if (this.peers.has(peerId)) {
+      const existing = this.peers.get(peerId);
+      log('replacing incomplete connection to', peerId.slice(0, 8), 'with answer path');
+      try { existing.pc?.close(); } catch {}
+      this.peers.delete(peerId);
+    }
+
     log('got answer from', peerId.slice(0, 8), '- setting remote desc');
     const { pc, dc } = pending;
-    const answerDesc = typeof sdp === 'string' ? { type: 'answer', sdp } : sdp;
-    await pc.setRemoteDescription(answerDesc);
 
-    pc.onconnectionstatechange = () => log('pc state:', pc.connectionState, 'peer:', peerId.slice(0, 8));
-    pc.oniceconnectionstatechange = () => log('ice state:', pc.iceConnectionState, 'peer:', peerId.slice(0, 8));
+    pc.onconnectionstatechange = () => log('pc state (offerer):', pc.connectionState, 'peer:', peerId.slice(0, 8));
+    pc.oniceconnectionstatechange = () => log('ice state (offerer):', pc.iceConnectionState, 'peer:', peerId.slice(0, 8));
 
-    pc.ontrack = (e) => {
-      this._emit('track', { peerId, track: e.track, streams: e.streams });
-    };
+    try {
+      const answerDesc = typeof sdp === 'string' ? { type: 'answer', sdp } : sdp;
+      await pc.setRemoteDescription(answerDesc);
 
-    this._knownPeerIds.add(peerId);
-    this.peers.set(peerId, { pc, dc, aesKey: null, pubKeyBytes: null, nickname: '', fp: '' });
-    this._syncTracks(this.peers.get(peerId));
+      pc.ontrack = (e) => {
+        this._emit('track', { peerId, track: e.track, streams: e.streams });
+      };
+
+      this._knownPeerIds.add(peerId);
+      this.peers.set(peerId, { pc, dc, aesKey: null, pubKeyBytes: null, nickname: '', fp: '' });
+      this._syncTracks(this.peers.get(peerId));
+    } catch (e) {
+      log('_onAnswer error:', e.message);
+      pc.close();
+    }
   }
 
   _createPC() {
