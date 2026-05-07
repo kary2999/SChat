@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=380">
+<title>SChat</title>
+<link rel="stylesheet" href="css/style.css">
+<script>
+  if (new URLSearchParams(location.search).get('mode') === 'expanded') {
+    document.documentElement.classList.add('expanded');
+  }
+  document.addEventListener('DOMContentLoaded', () => {
+    if (document.documentElement.classList.contains('expanded')) {
+      document.body.classList.add('expanded');
+    }
+  });
+</script>
+</head>
+<body>
+<div class="app">
+  <!-- ======= JOIN SCREEN ======= -->
+  <div class="screen active" id="join-screen">
+    <div class="join-screen">
+      <div class="join-logo">SCH<span class="mag">_</span>AT</div>
+      <div class="join-tagline">ENCRYPTED · EPHEMERAL · P2P</div>
+
+      <div class="join-divider"></div>
+
+      <!-- Quick join default channel -->
+      <div class="quick-join" id="quick-join">
+        <div class="quick-join-header">
+          <span class="quick-join-title"># 知音广场</span>
+          <span class="quick-join-arrow">&rarr;</span>
+        </div>
+        <div class="quick-join-desc">PUBLIC LOBBY · OPEN CHANNEL · NO PASSWORD</div>
+        <div class="quick-join-meta">
+          <span>E2E ENCRYPTED</span>
+          <span>60s TTL</span>
+          <span>AUTO JOIN</span>
+        </div>
+      </div>
+
+      <div class="join-or">&#x2500;&#x2500; OR CREATE / JOIN &#x2500;&#x2500;</div>
+
+      <div class="join-form">
+        <div class="field">
+          <label>NICKNAME</label>
+          <input id="nick-input" placeholder="your callsign" maxlength="20" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label>CHANNEL</label>
+          <input id="channel-input" placeholder="channel name" maxlength="64" autocomplete="off" />
+        </div>
+        <div class="field">
+          <label>PASSWORD (OPTIONAL)</label>
+          <input id="password-input" type="password" placeholder="leave empty for open channel" maxlength="64" autocomplete="off" />
+        </div>
+        <button class="join-btn" id="join-btn">CONNECT ↵</button>
+      </div>
+
+      <div class="join-footer">
+        NO SERVER · NO LOG · NO TRACE · MESSAGES DIE IN 60s
+      </div>
+    </div>
+  </div>
+
+  <!-- ======= CHAT SCREEN ======= -->
+  <div class="screen" id="chat-screen">
+    <!-- header -->
+    <div class="header">
+      <div class="logo">SCH<span class="mag">_</span>AT</div>
+      <div class="ctrl">
+        <button id="expand-btn" title="expand">&#x2922;</button>
+        <button id="leave-btn" title="leave">&#x23FB;</button>
+      </div>
+    </div>
+
+    <!-- status -->
+    <div class="status-bar">
+      <span><span class="blink-dot"></span>SECURE · <span id="peer-count">0</span> PEER</span>
+      <span class="ch">CH <b>#<span id="channel-name">-</span></b></span>
+      <span>P2P · E2E</span>
+    </div>
+
+    <!-- video tiles -->
+    <div class="tiles" id="tiles"></div>
+
+    <!-- feed -->
+    <div class="feed" id="feed"></div>
+
+    <!-- toolbar -->
+    <div class="toolbar">
+      <button id="mic-btn" title="live mic">&#x1F3A4;</button>
+      <button id="cam-btn" title="camera">&#x1F4F9;</button>
+      <button id="voice-btn" title="voice msg">&#x1F399;</button>
+      <button id="img-btn" title="image">&#x1F5BC;</button>
+      <button id="burn-btn" title="burn mode">&#x1F525;</button>
+      <button id="ch-btn" title="switch channel">#</button>
+      <div class="spacer"></div>
+    </div>
+
+    <!-- input -->
+    <div class="input-row">
+      <span class="prompt">&gt;</span>
+      <input id="msg-input" placeholder="type or paste..." autocomplete="off" />
+      <button id="paste-btn">PASTE</button>
+      <button id="send-btn" class="send-btn">SEND ↵</button>
+    </div>
+
+    <!-- footer -->
+    <div class="footer">
+      <span id="footer-ttl">TTL 60s</span>
+      <span>NO DISK</span>
+      <span>P2P · E2E</span>
+    </div>
+  </div>
+</div>
+
+<!-- Channel switch modal -->
+<div class="modal-overlay" id="modal-overlay">
+  <div class="modal">
+    <h3>SWITCH CHANNEL</h3>
+    <input id="modal-channel" placeholder="channel name" maxlength="64" autocomplete="off" />
+    <input id="modal-password" type="password" placeholder="password (optional)" maxlength="64" autocomplete="off" />
+    <div class="modal-btns">
+      <button id="modal-cancel">CANCEL</button>
+      <button id="modal-join" class="primary">JOIN</button>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
