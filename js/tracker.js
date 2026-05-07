@@ -1,6 +1,9 @@
 const TRACKERS = [
   'wss://tracker.openwebtorrent.com',
-  'wss://tracker.webtorrent.dev'
+  'wss://tracker.webtorrent.dev',
+  'wss://tracker.btorrent.xyz',
+  'wss://tracker.files.fm:7073/announce',
+  'wss://tracker.novage.com.ua'
 ];
 
 const REANNOUNCE_MS = 30_000;

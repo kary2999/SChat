@@ -5,21 +5,23 @@ const RTC_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:openrelay.metered.ca:80' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
     {
-      urls: 'turn:openrelay.metered.ca:80',
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp'
+      ],
       username: 'openrelayproject',
       credential: 'openrelayproject'
     },
     {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
+      urls: [
+        'turn:relay1.expressturn.com:3478',
+        'turn:relay1.expressturn.com:3480'
+      ],
+      username: 'efPN3HM65DA9PSWLQE',
+      credential: 'kQH5JRZqCQRWKkNH'
     }
   ],
   iceCandidatePoolSize: 4
@@ -352,6 +354,25 @@ export class Mesh extends EventTarget {
   _setupDC(dc, offerId, remotePeerId) {
     dc.binaryType = 'arraybuffer';
 
+    const sendKey = (pid) => {
+      if (dc.readyState !== 'open') return false;
+      const keyMsg = JSON.stringify({
+        t: 'key',
+        pub: Array.from(this.pubKeyBytes),
+        nick: this.nickname,
+        peerId: this.peerId,
+        owner: this.isOwner
+      });
+      try {
+        dc.send(new TextEncoder().encode(keyMsg));
+        log('sent key →', pid?.slice(0, 8));
+        return true;
+      } catch (err) {
+        log('send key FAILED →', pid?.slice(0, 8), err.message);
+        return false;
+      }
+    };
+
     dc.onopen = async () => {
       let pid = remotePeerId;
       if (!pid) {
@@ -360,19 +381,27 @@ export class Mesh extends EventTarget {
         }
       }
       log('dc OPEN', pid?.slice(0, 8) || offerId?.slice(0, 8));
-
-      const keyMsg = JSON.stringify({
-        t: 'key',
-        pub: Array.from(this.pubKeyBytes),
-        nick: this.nickname,
-        peerId: this.peerId,
-        owner: this.isOwner
-      });
-      try { dc.send(new TextEncoder().encode(keyMsg)); } catch {}
-
       if (pid && this.peers.has(pid)) {
         this.peers.get(pid).dc = dc;
       }
+      // First send happens after the next microtask — fixes Safari race where
+      // dc.onopen fires but the channel is not yet truly ready to send.
+      await Promise.resolve();
+      sendKey(pid);
+
+      // Resend the key periodically for up to 15s in case the first packet
+      // is lost or the peer's catch{} has dropped a malformed parse silently.
+      let attempts = 0;
+      const retryTimer = setInterval(() => {
+        attempts++;
+        const peer = pid ? this.peers.get(pid) : null;
+        if (!peer || peer.aesKey || dc.readyState !== 'open' || attempts > 10) {
+          clearInterval(retryTimer);
+          return;
+        }
+        sendKey(pid);
+      }, 1500);
+
       this._emit('dc-open', { peerId: pid });
     };
 
@@ -389,25 +418,34 @@ export class Mesh extends EventTarget {
       if (!peer) return;
 
       if (!peer.aesKey) {
+        let text;
+        try { text = new TextDecoder().decode(data); }
+        catch (e) { log('key handshake: utf-8 decode failed', e.message); return; }
+
+        let msg;
+        try { msg = JSON.parse(text); }
+        catch (e) { log('key handshake: JSON parse failed', e.message, 'text=', text.slice(0, 60)); return; }
+
+        if (msg.t !== 'key') { log('key handshake: unexpected msg type', msg.t); return; }
+
         try {
-          const text = new TextDecoder().decode(data);
-          const msg = JSON.parse(text);
-          if (msg.t === 'key') {
-            peer.pubKeyBytes = new Uint8Array(msg.pub);
-            const theirPub = await importPublicKey(peer.pubKeyBytes);
-            peer.aesKey = await deriveKey(this.keyPair.privateKey, theirPub);
-            peer.nickname = msg.nick || pid.slice(0, 8);
-            peer.fp = await fingerprint(peer.pubKeyBytes);
-            peer.isOwner = !!msg.owner;
-            if (peer.isOwner && !this.ownerFp) this.ownerFp = peer.fp;
-            this._emit('peer-ready', {
-              peerId: pid,
-              nickname: peer.nickname,
-              fingerprint: peer.fp,
-              isOwner: peer.isOwner
-            });
-          }
-        } catch {}
+          peer.pubKeyBytes = new Uint8Array(msg.pub);
+          const theirPub = await importPublicKey(peer.pubKeyBytes);
+          peer.aesKey = await deriveKey(this.keyPair.privateKey, theirPub);
+          peer.nickname = msg.nick || pid.slice(0, 8);
+          peer.fp = await fingerprint(peer.pubKeyBytes);
+          peer.isOwner = !!msg.owner;
+          if (peer.isOwner && !this.ownerFp) this.ownerFp = peer.fp;
+          log('key exchanged ✓', pid.slice(0, 8), 'nick=', peer.nickname);
+          this._emit('peer-ready', {
+            peerId: pid,
+            nickname: peer.nickname,
+            fingerprint: peer.fp,
+            isOwner: peer.isOwner
+          });
+        } catch (e) {
+          log('key handshake: import/derive failed', e.message);
+        }
         return;
       }
 
