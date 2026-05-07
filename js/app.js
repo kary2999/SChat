@@ -103,6 +103,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     refreshPeerList();
   });
 
+  mesh.addEventListener('owner-changed', (e) => {
+    setOwnerBadge(e.detail.isOwner);
+    if (!e.detail.isOwner) addSystemMessage('已让出房主权限（频道内已存在更早的房主）');
+    refreshPeerList();
+  });
+
   mesh.addEventListener('peer-fail', (e) => {
     addSystemMessage(`节点 ${e.detail.peerId.slice(0, 8)} 连接失败：${e.detail.reason}`);
   });
@@ -150,11 +156,67 @@ async function doPaste() {
   if (clip.type === 'text') {
     document.getElementById('msg-input').value = clip.data;
   } else if (clip.type === 'image') {
-    const dataUrl = await blobToBase64(clip.data);
-    if (!validateImageData(dataUrl)) return;
-    mesh.broadcast({ t: 'img', data: dataUrl, burn: burnMode });
-    addImageMessage({ nick: '我', dataUrl, isSelf: true, burn: burnMode });
+    await sendImageBlob(clip.data);
   }
+}
+
+async function sendImageBlob(fileOrBlob) {
+  const origKB = (fileOrBlob.size / 1024).toFixed(0);
+  let dataUrl;
+  // Pass raster images through canvas to enforce a sane max-size; SVG is
+  // sent as-is (canvas cannot rasterise it without a load round-trip).
+  if (fileOrBlob.type === 'image/svg+xml' || fileOrBlob.type === 'image/gif') {
+    dataUrl = await blobToBase64(fileOrBlob);
+  } else {
+    try {
+      dataUrl = await compressImage(fileOrBlob, 1280, 0.75);
+    } catch (e) {
+      addSystemMessage('图片压缩失败：' + e.message);
+      return;
+    }
+  }
+  const finalKB = (dataUrl.length / 1024).toFixed(0);
+  if (dataUrl.length > 8_000_000) {
+    addSystemMessage(`图片过大无法发送 (压缩后 ${finalKB}KB / 上限 8000KB)`);
+    return;
+  }
+  if (!dataUrl.startsWith('data:image/')) {
+    addSystemMessage('图片格式无效');
+    return;
+  }
+  addSystemMessage(`正在发送图片 (${origKB}KB → ${finalKB}KB)`);
+  mesh.broadcast({ t: 'img', data: dataUrl, burn: burnMode });
+  addImageMessage({ nick: '我', dataUrl, isSelf: true, burn: burnMode });
+}
+
+function compressImage(blob, maxSide, quality) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    const url = URL.createObjectURL(blob);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      let { width, height } = img;
+      if (width > maxSide || height > maxSide) {
+        if (width > height) {
+          height = Math.round(height * maxSide / width);
+          width = maxSide;
+        } else {
+          width = Math.round(width * maxSide / height);
+          height = maxSide;
+        }
+      }
+      const canvas = document.createElement('canvas');
+      canvas.width = width;
+      canvas.height = height;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, width, height);
+      // PNG with transparency keeps as PNG; otherwise JPEG for size.
+      const mime = blob.type === 'image/png' ? 'image/png' : 'image/jpeg';
+      resolve(canvas.toDataURL(mime, quality));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error('image load failed')); };
+    img.src = url;
+  });
 }
 
 function toggleBurn() {
@@ -234,10 +296,7 @@ function pickImage() {
   input.onchange = async () => {
     const file = input.files[0];
     if (!file || !file.type.startsWith('image/')) return;
-    const dataUrl = await blobToBase64(file);
-    if (!validateImageData(dataUrl)) return;
-    mesh.broadcast({ t: 'img', data: dataUrl, burn: burnMode });
-    addImageMessage({ nick: '我', dataUrl, isSelf: true, burn: burnMode });
+    await sendImageBlob(file);
   };
   input.click();
 }
@@ -265,8 +324,8 @@ function handleIncoming(msg) {
 function validateImageData(dataUrl) {
   if (typeof dataUrl !== 'string') return false;
   if (!dataUrl.startsWith('data:image/')) return false;
-  if (dataUrl.length > 5_000_000) {
-    addSystemMessage('图片过大 (上限约 3.5MB)');
+  if (dataUrl.length > 8_000_000) {
+    addSystemMessage(`图片过大 (${(dataUrl.length/1024).toFixed(0)}KB，上限 8000KB)`);
     return false;
   }
   return true;

@@ -153,13 +153,68 @@ export class Mesh extends EventTarget {
   }
 
   async broadcast(payload) {
+    // Image messages can exceed the WebRTC data-channel single-message limit
+    // (~256KB). Split them into chunks the receiver reassembles.
+    if ((payload.t === 'img' || payload.t === 'voice')
+        && typeof payload.data === 'string' && payload.data.length > 60_000) {
+      return this._broadcastChunked(payload);
+    }
     const json = JSON.stringify(payload);
     for (const [, peer] of this.peers) {
       if (!peer.aesKey || !peer.dc || peer.dc.readyState !== 'open') continue;
       try {
         const ct = await encrypt(peer.aesKey, json);
         peer.dc.send(ct);
-      } catch {}
+      } catch (e) { log('broadcast send failed:', e.message); }
+    }
+  }
+
+  async _broadcastChunked(payload) {
+    const CHUNK = 60_000; // 60KB plain-text chunks (≈ <90KB ciphertext, well under 256KB)
+    const id = randomId(8);
+    const data = payload.data;
+    const total = Math.ceil(data.length / CHUNK);
+    const meta = { ...payload, data: undefined };
+    delete meta.data;
+    log('chunked send id=', id, 'parts=', total);
+    for (const [, peer] of this.peers) {
+      if (!peer.aesKey || !peer.dc || peer.dc.readyState !== 'open') continue;
+      try {
+        for (let i = 0; i < total; i++) {
+          const part = data.slice(i * CHUNK, (i + 1) * CHUNK);
+          const chunkMsg = { t: 'imgchunk', id, i, total, meta, part };
+          const ct = await encrypt(peer.aesKey, JSON.stringify(chunkMsg));
+          peer.dc.send(ct);
+          // Yield occasionally to avoid blocking the DC send buffer
+          if (i % 5 === 0) await new Promise(r => setTimeout(r, 0));
+        }
+      } catch (e) { log('chunk broadcast failed:', e.message); }
+    }
+  }
+
+  _absorbChunk(pid, msg) {
+    if (!this._chunkBuffers) this._chunkBuffers = new Map();
+    const key = pid + ':' + msg.id;
+    let buf = this._chunkBuffers.get(key);
+    if (!buf) {
+      buf = { parts: new Array(msg.total), got: 0, meta: msg.meta };
+      this._chunkBuffers.set(key, buf);
+    }
+    if (!buf.parts[msg.i]) {
+      buf.parts[msg.i] = msg.part;
+      buf.got++;
+    }
+    if (buf.got === msg.total) {
+      this._chunkBuffers.delete(key);
+      const data = buf.parts.join('');
+      const reassembled = { ...buf.meta, data, _from: pid };
+      const peer = this.peers.get(pid);
+      if (peer) {
+        reassembled._nick = peer.nickname;
+        reassembled._fp = peer.fp;
+        reassembled._fromOwner = peer.isOwner;
+      }
+      this._emit('message', reassembled);
     }
   }
 
@@ -272,6 +327,7 @@ export class Mesh extends EventTarget {
       }
     };
     pc.oniceconnectionstatechange = () => log('ice(answerer)', pc.iceConnectionState, peerId.slice(0, 8));
+    this._setupRenegotiation(pc, peerId);
 
     this.peers.set(peerId, {
       pc, dc: null, aesKey: null, pubKeyBytes: null,
@@ -333,6 +389,7 @@ export class Mesh extends EventTarget {
       }
     };
     pc.oniceconnectionstatechange = () => log('ice(offerer)', pc.iceConnectionState, peerId.slice(0, 8));
+    this._setupRenegotiation(pc, peerId);
 
     this.peers.set(peerId, {
       pc, dc, aesKey: null, pubKeyBytes: null,
@@ -350,6 +407,76 @@ export class Mesh extends EventTarget {
   }
 
   _createPC() { return new RTCPeerConnection(RTC_CONFIG); }
+
+  // Perfect-negotiation pattern over the encrypted data channel.
+  // Either side adding a track triggers `negotiationneeded` → we craft an
+  // offer and ship it inside the secure DC. Glare resolved by polite/impolite
+  // (lower peerId = polite, rolls back its own offer on collision).
+  _setupRenegotiation(pc, peerId) {
+    pc.onnegotiationneeded = async () => {
+      const peer = this.peers.get(peerId);
+      if (!peer || !peer.aesKey) return; // wait until the DC handshake done
+      if (peer._makingOffer) return;
+      peer._makingOffer = true;
+      try {
+        await pc.setLocalDescription();
+        await this._waitIce(pc);
+        const sdp = stripLocalCandidates(pc.localDescription.sdp);
+        await this._sendSecure(peer, { t: 'reneg-offer', sdp });
+        log('reneg → sent offer to', peerId.slice(0, 8));
+      } catch (e) {
+        log('reneg offer failed:', e.message);
+      } finally {
+        peer._makingOffer = false;
+      }
+    };
+  }
+
+  async _sendSecure(peer, payload) {
+    if (!peer || !peer.aesKey || !peer.dc || peer.dc.readyState !== 'open') return;
+    const ct = await encrypt(peer.aesKey, JSON.stringify(payload));
+    peer.dc.send(ct);
+  }
+
+  async _handleRenegOffer(peer, peerId, sdp) {
+    const pc = peer.pc;
+    if (!pc) return;
+    const isPolite = this.peerId < peerId;
+    const collision = peer._makingOffer || pc.signalingState !== 'stable';
+    if (!isPolite && collision) {
+      log('reneg ← ignoring offer (impolite collision) from', peerId.slice(0, 8));
+      return;
+    }
+    try {
+      if (collision) {
+        await Promise.all([
+          pc.setLocalDescription({ type: 'rollback' }),
+          pc.setRemoteDescription({ type: 'offer', sdp })
+        ]);
+      } else {
+        await pc.setRemoteDescription({ type: 'offer', sdp });
+      }
+      await pc.setLocalDescription();
+      await this._waitIce(pc);
+      const answerSdp = stripLocalCandidates(pc.localDescription.sdp);
+      await this._sendSecure(peer, { t: 'reneg-answer', sdp: answerSdp });
+      log('reneg → sent answer to', peerId.slice(0, 8));
+    } catch (e) {
+      log('reneg answer failed:', e.message);
+    }
+  }
+
+  async _handleRenegAnswer(peer, peerId, sdp) {
+    const pc = peer.pc;
+    if (!pc) return;
+    if (pc.signalingState === 'stable') return;
+    try {
+      await pc.setRemoteDescription({ type: 'answer', sdp });
+      log('reneg ← applied answer from', peerId.slice(0, 8));
+    } catch (e) {
+      log('reneg apply answer failed:', e.message);
+    }
+  }
 
   _setupDC(dc, offerId, remotePeerId) {
     dc.binaryType = 'arraybuffer';
@@ -435,7 +562,21 @@ export class Mesh extends EventTarget {
           peer.nickname = msg.nick || pid.slice(0, 8);
           peer.fp = await fingerprint(peer.pubKeyBytes);
           peer.isOwner = !!msg.owner;
-          if (peer.isOwner && !this.ownerFp) this.ownerFp = peer.fp;
+          // Single-owner enforcement: if both ends claim owner, the lower
+          // fingerprint wins; we self-demote here so UI is consistent.
+          if (peer.isOwner && this.isOwner) {
+            if (peer.fp < this.pubFp) {
+              log('demoting self — peer', pid.slice(0, 8), 'has lower fp');
+              this.isOwner = false;
+              sessionStorage.removeItem(ownerKey(this.channelName));
+              this.ownerFp = peer.fp;
+              this._emit('owner-changed', { isOwner: false });
+            } else {
+              peer.isOwner = false;
+            }
+          } else if (peer.isOwner && !this.ownerFp) {
+            this.ownerFp = peer.fp;
+          }
           log('key exchanged ✓', pid.slice(0, 8), 'nick=', peer.nickname);
           this._emit('peer-ready', {
             peerId: pid,
@@ -458,6 +599,18 @@ export class Mesh extends EventTarget {
         msg._fp = peer.fp;
         msg._fromOwner = peer.isOwner;
 
+        if (msg.t === 'reneg-offer') {
+          await this._handleRenegOffer(peer, pid, msg.sdp);
+          return;
+        }
+        if (msg.t === 'reneg-answer') {
+          await this._handleRenegAnswer(peer, pid, msg.sdp);
+          return;
+        }
+        if (msg.t === 'imgchunk') {
+          this._absorbChunk(pid, msg);
+          return;
+        }
         if (msg.t === 'ban') {
           if (peer.isOwner && peer.fp === this.ownerFp) {
             const target = msg.target;
@@ -492,7 +645,10 @@ export class Mesh extends EventTarget {
           if (peer.dc === dc) { pid = id; break; }
         }
       }
-      if (pid) {
+      // Only emit leave if peer is still in our table; if _closePeer was
+      // already called manually (eg. during glare replacement) the entry
+      // was removed and we should NOT fire a phantom peer-leave.
+      if (pid && this.peers.has(pid)) {
         this._closePeer(pid);
         this._emit('peer-leave', { peerId: pid });
       }
