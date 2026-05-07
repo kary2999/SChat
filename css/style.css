@@ -237,6 +237,19 @@ body::before {
   opacity: 0.5;
   position: relative; z-index: 1;
 }
+.version-tag {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--cyan);
+  opacity: 0.8;
+  letter-spacing: 2px;
+}
+.version-tag span { color: var(--green); font-weight: 700; }
+.footer-version {
+  color: var(--cyan);
+  opacity: 0.85;
+  font-weight: 700;
+}
 
 /* ======= CHAT SCREEN ======= */
 #chat-screen { background: var(--bg); }
