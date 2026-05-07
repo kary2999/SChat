@@ -1,10 +1,8 @@
 const TRACKERS = [
   'wss://tracker.openwebtorrent.com',
-  'wss://tracker.webtorrent.dev',
-  'wss://tracker.btorrent.xyz',
-  'wss://tracker.files.fm:7073/announce',
-  'wss://tracker.novage.com.ua'
+  'wss://tracker.webtorrent.dev'
 ];
+const MAX_RECONNECT = 3;
 
 const REANNOUNCE_MS = 30_000;
 const log = (...a) => console.log('[tracker]', ...a);
@@ -25,8 +23,12 @@ export class TrackerClient extends EventTarget {
     }
   }
 
-  _connectOne(url, makeOffers) {
+  _connectOne(url, makeOffers, attempt = 0) {
     if (this._closed) return;
+    if (attempt >= MAX_RECONNECT) {
+      log('giving up on', url, 'after', attempt, 'attempts');
+      return;
+    }
     let ws;
     try { ws = new WebSocket(url); } catch (e) { log('ws create failed', url, e); return; }
 
@@ -96,12 +98,20 @@ export class TrackerClient extends EventTarget {
       }
     };
 
+    ws._opened = false;
+    ws.addEventListener('open', () => { ws._opened = true; }, { once: true });
+
     ws.onclose = (e) => {
       log('disconnected from', url, e.code);
       if (this._closed) return;
-      setTimeout(() => this._connectOne(url, makeOffers), 5000);
+      // If the socket never even opened, treat as fatal after MAX_RECONNECT;
+      // a successful open resets the attempt counter so an established
+      // connection that drops can keep retrying without quota.
+      const next = ws._opened ? 0 : attempt + 1;
+      const delay = ws._opened ? 5000 : 8000 * (attempt + 1);
+      setTimeout(() => this._connectOne(url, makeOffers, next), delay);
     };
-    ws.onerror = () => { log('ws error', url); };
+    ws.onerror = () => { /* swallow — onclose follows and handles retry */ };
 
     this._sockets.push(ws);
   }
