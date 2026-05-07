@@ -2,16 +2,19 @@ import { generateKeyPair, exportPublicKey, importPublicKey, deriveKey, encrypt, 
 import { TrackerClient } from './tracker.js';
 
 const RTC_CONFIG = {
-  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' }
+  ]
 };
 
-const MAX_OFFERS = 10;
+const MAX_OFFERS = 5;
+const log = (...a) => console.log('[mesh]', ...a);
 
 function stripLocalCandidates(sdp) {
   return sdp.split('\r\n').filter(line => {
     if (!line.startsWith('a=candidate:')) return true;
     if (line.includes(' host ')) return false;
-    if (line.includes(' srflx ')) return false;
     return true;
   }).join('\r\n');
 }
@@ -44,6 +47,7 @@ export class Mesh extends EventTarget {
     this.channelName = channelName;
     const hash = await channelHash(channelName, password);
 
+    log('joining channel', channelName, 'hash', hash.slice(0, 12), 'peerId', this.peerId.slice(0, 8));
     this._tracker = new TrackerClient(hash, this.peerId);
     this._tracker.addEventListener('offer', (e) => this._onOffer(e.detail));
     this._tracker.addEventListener('answer', (e) => this._onAnswer(e.detail));
@@ -123,6 +127,7 @@ export class Mesh extends EventTarget {
   }
 
   async _makeOffers() {
+    log('creating', MAX_OFFERS, 'offers...');
     const offers = [];
     for (let i = 0; i < MAX_OFFERS; i++) {
       const offerId = randomId(20);
@@ -134,12 +139,17 @@ export class Mesh extends EventTarget {
       await pc.setLocalDescription(offer);
       await this._waitIce(pc);
 
+      const sdp = stripLocalCandidates(pc.localDescription.sdp);
+      const candidateCount = (sdp.match(/a=candidate:/g) || []).length;
+      if (i === 0) log('offer 0: ICE candidates:', candidateCount);
+
       this._pendingOffers.set(offerId, { pc, dc });
       offers.push({
         offer_id: offerId,
-        offer: { type: 'offer', sdp: stripLocalCandidates(pc.localDescription.sdp) }
+        offer: { type: 'offer', sdp }
       });
     }
+    log('created', offers.length, 'offers');
     return offers;
   }
 
@@ -147,6 +157,7 @@ export class Mesh extends EventTarget {
     if (this.peers.has(peerId) || peerId === this.peerId) return;
     if (this._knownPeerIds.has(peerId)) return;
 
+    log('processing offer from', peerId.slice(0, 8));
     const pc = this._createPC();
     pc.ondatachannel = (e) => {
       this._setupDC(e.channel, null, peerId);
@@ -161,9 +172,12 @@ export class Mesh extends EventTarget {
     await pc.setLocalDescription(answer);
     await this._waitIce(pc);
 
+    const answerSdp = stripLocalCandidates(pc.localDescription.sdp);
+    log('sending answer to', peerId.slice(0, 8), 'candidates:', (answerSdp.match(/a=candidate:/g) || []).length);
+
     this._tracker.sendAnswer(peerId, offerId, {
       type: 'answer',
-      sdp: stripLocalCandidates(pc.localDescription.sdp)
+      sdp: answerSdp
     });
 
     this._knownPeerIds.add(peerId);
@@ -173,16 +187,21 @@ export class Mesh extends EventTarget {
 
   async _onAnswer({ peerId, offerId, sdp }) {
     const pending = this._pendingOffers.get(offerId);
-    if (!pending) return;
+    if (!pending) { log('no pending offer for', offerId.slice(0, 8)); return; }
     this._pendingOffers.delete(offerId);
 
     if (this.peers.has(peerId)) {
+      log('already connected to', peerId.slice(0, 8), '- closing duplicate');
       pending.pc.close();
       return;
     }
 
+    log('got answer from', peerId.slice(0, 8), '- setting remote desc');
     const { pc, dc } = pending;
     await pc.setRemoteDescription({ type: 'answer', sdp });
+
+    pc.onconnectionstatechange = () => log('pc state:', pc.connectionState, 'peer:', peerId.slice(0, 8));
+    pc.oniceconnectionstatechange = () => log('ice state:', pc.iceConnectionState, 'peer:', peerId.slice(0, 8));
 
     pc.ontrack = (e) => {
       this._emit('track', { peerId, track: e.track, streams: e.streams });
@@ -202,6 +221,7 @@ export class Mesh extends EventTarget {
     dc.binaryType = 'arraybuffer';
 
     dc.onopen = async () => {
+      log('datachannel OPEN', remotePeerId?.slice(0, 8) || offerId?.slice(0, 8));
       let pid = remotePeerId;
       if (!pid && offerId) {
         for (const [id, peer] of this.peers) {
@@ -215,6 +235,7 @@ export class Mesh extends EventTarget {
         nick: this.nickname
       });
       dc.send(new TextEncoder().encode(keyMsg));
+      log('sent ECDH pubkey to', pid?.slice(0, 8));
 
       if (pid && this.peers.has(pid)) {
         this.peers.get(pid).dc = dc;

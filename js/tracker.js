@@ -4,6 +4,7 @@ const TRACKERS = [
 ];
 
 const REANNOUNCE_MS = 30_000;
+const log = (...a) => console.log('[tracker]', ...a);
 
 export class TrackerClient extends EventTarget {
   constructor(infoHash, peerId) {
@@ -24,10 +25,14 @@ export class TrackerClient extends EventTarget {
   _connectOne(url, makeOffers) {
     if (this._closed) return;
     let ws;
-    try { ws = new WebSocket(url); } catch { return; }
+    try { ws = new WebSocket(url); } catch (e) { log('ws create failed', url, e); return; }
+
+    ws._url = url;
 
     ws.onopen = async () => {
+      log('connected to', url);
       const offers = await makeOffers();
+      log('announcing with', offers.length, 'offers');
       this._send(ws, {
         action: 'announce',
         info_hash: this.infoHash,
@@ -42,6 +47,7 @@ export class TrackerClient extends EventTarget {
       const timer = setInterval(async () => {
         if (ws.readyState !== WebSocket.OPEN) return;
         const reoffers = await makeOffers();
+        log('re-announcing with', reoffers.length, 'offers');
         this._send(ws, {
           action: 'announce',
           info_hash: this.infoHash,
@@ -62,7 +68,10 @@ export class TrackerClient extends EventTarget {
 
       if (msg.peer_id === this.peerId) return;
 
+      if (msg.info_hash && msg.info_hash !== this.infoHash) return;
+
       if (msg.offer) {
+        log('got offer from', msg.peer_id?.slice(0, 8));
         this.dispatchEvent(new CustomEvent('offer', {
           detail: {
             peerId: msg.peer_id,
@@ -71,6 +80,7 @@ export class TrackerClient extends EventTarget {
           }
         }));
       } else if (msg.answer) {
+        log('got answer from', msg.peer_id?.slice(0, 8));
         this.dispatchEvent(new CustomEvent('answer', {
           detail: {
             peerId: msg.peer_id,
@@ -78,19 +88,23 @@ export class TrackerClient extends EventTarget {
             sdp: msg.answer
           }
         }));
+      } else {
+        log('tracker msg', Object.keys(msg).join(','));
       }
     };
 
-    ws.onclose = () => {
+    ws.onclose = (e) => {
+      log('disconnected from', url, e.code);
       if (this._closed) return;
       setTimeout(() => this._connectOne(url, makeOffers), 5000);
     };
-    ws.onerror = () => {};
+    ws.onerror = () => { log('ws error', url); };
 
     this._sockets.push(ws);
   }
 
   sendAnswer(toPeerId, offerId, sdp) {
+    log('sending answer to', toPeerId?.slice(0, 8));
     const msg = {
       action: 'announce',
       info_hash: this.infoHash,
