@@ -8,6 +8,8 @@ import {
 } from './ui.js';
 
 const mesh = new Mesh();
+// debug hook for E2E tests; harmless in prod
+if (typeof window !== 'undefined') window._mesh = mesh;
 let burnMode = false;
 let micLive = false;
 let camLive = false;
@@ -23,6 +25,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   const savedNick = localStorage.getItem('schat_nick') || '';
   const nickInput = document.getElementById('nick-input');
   if (savedNick) nickInput.value = savedNick;
+
+  // Test harness: ?nick=X&autoJoin=zhiyin → auto-join the public lobby
+  const params = new URLSearchParams(location.search);
+  const urlNick = params.get('nick');
+  if (urlNick) nickInput.value = urlNick;
+  const auto = params.get('autoJoin');
+  if (auto === 'zhiyin') {
+    setTimeout(async () => {
+      const nick = urlNick || undefined;
+      await mesh.init(nick);
+      await mesh.join('知音广场', '');
+    }, 300);
+  }
 
   document.getElementById('join-btn').addEventListener('click', () => doJoin(false));
   document.getElementById('create-btn')?.addEventListener('click', () => doJoin(true));

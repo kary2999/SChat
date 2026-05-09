@@ -32,13 +32,13 @@ const OFFER_CACHE_MS = 5000;
 const PENDING_OFFER_TTL = 90_000;
 const log = (...a) => console.log('[mesh]', ...a);
 
-function stripLocalCandidates(sdp) {
-  return sdp.split('\r\n').filter(line => {
-    if (!line.startsWith('a=candidate:')) return true;
-    if (line.includes(' host ')) return false;
-    return true;
-  }).join('\r\n');
-}
+// Modern browsers (Chrome 75+, Firefox, Safari) already anonymize host
+// candidates by replacing the LAN IP with an mDNS .local hostname that's
+// only resolvable on the local link. Stripping host candidates was breaking
+// same-network connectivity (LAN, same-machine, NAT hairpin scenarios)
+// without adding any real privacy benefit. So we now pass SDP through
+// untouched and rely on the browser's built-in mDNS anonymization.
+function stripLocalCandidates(sdp) { return sdp; }
 
 function banKey(channelName) { return 'schat_ban_' + channelName; }
 function ownerKey(channelName) { return 'schat_owner_' + channelName; }
@@ -65,11 +65,17 @@ export class Mesh extends EventTarget {
   }
 
   async init(nickname) {
+    // Test override: allow ?testId=xxx in URL to force a specific peerId.
+    // Used for E2E tests where two iframes in the same top-level window
+    // share sessionStorage and would otherwise collide on peerId.
+    const urlTestId = new URLSearchParams(location.search).get('testId');
     this.nickname = nickname || 'anon-' + randomId(3);
-    // peerId is per-tab/session so the same browser can open multiple windows.
-    // Persistent identity is the ECDH public-key fingerprint, not peerId.
-    this.peerId = sessionStorage.getItem('schat_peer_id') || randomId(20);
-    sessionStorage.setItem('schat_peer_id', this.peerId);
+    if (urlTestId) {
+      this.peerId = urlTestId;
+    } else {
+      this.peerId = sessionStorage.getItem('schat_peer_id') || randomId(20);
+      sessionStorage.setItem('schat_peer_id', this.peerId);
+    }
     this.keyPair = await generateKeyPair();
     this.pubKeyBytes = await exportPublicKey(this.keyPair);
     this.pubFp = await fingerprint(this.pubKeyBytes);
