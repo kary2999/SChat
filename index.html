@@ -4,8 +4,15 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>SChat · 加密点对点聊天</title>
-<link rel="stylesheet" href="css/style.css">
 <script>
+  (function () {
+    var ids = ['matrix', 'amber', 'ocean'];
+    var t = null;
+    try { t = sessionStorage.getItem('schat_theme'); } catch (e) {}
+    if (ids.indexOf(t) < 0) t = ids[Math.floor(Math.random() * ids.length)];
+    document.documentElement.setAttribute('data-theme', t);
+    try { sessionStorage.setItem('schat_theme', t); } catch (e) {}
+  })();
   if (new URLSearchParams(location.search).get('mode') === 'expanded') {
     document.documentElement.classList.add('expanded');
   }
@@ -15,6 +22,7 @@
     }
   });
 </script>
+<link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <div class="app">
@@ -42,6 +50,8 @@
 
       <div class="join-or">&#x2500;&#x2500; 或者创建/加入房间 &#x2500;&#x2500;</div>
 
+      <div class="theme-picker" id="theme-picker"></div>
+
       <div class="join-form">
         <div class="field">
           <label>昵称</label>
@@ -63,7 +73,7 @@
 
       <div class="join-footer">
         无服务器 · 无日志 · 无痕迹 · 消息 60 秒后自动销毁
-        <div class="version-tag">SChat <span id="app-version">v1.5.2</span></div>
+        <div class="version-tag">SChat <span id="app-version">v1.6.0</span></div>
       </div>
     </div>
   </div>
@@ -120,7 +130,7 @@
       <span id="footer-ttl">TTL 60秒</span>
       <span>不落盘</span>
       <span>P2P · E2E</span>
-      <span class="footer-version">v1.5.2</span>
+      <span class="footer-version">v1.6.0</span>
     </div>
   </div>
 </div>

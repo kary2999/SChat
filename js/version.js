@@ -1,5 +1,5 @@
 /** 本地运行版本 —— 发版时与 manifest.json 同步改这里 */
-export const APP_VERSION = '1.5.2';
+export const APP_VERSION = '1.6.0';
 
 const CHECK_MS = 3 * 60 * 1000;
 const BANNER_ID = 'update-banner';

@@ -7,6 +7,7 @@ import {
   setOwnerBadge, renderPeerList, togglePeerPanel, onKickPeer
 } from './ui.js';
 import { startVersionCheck } from './version.js';
+import { initTheme, bindThemePicker } from './theme.js';
 
 const mesh = new Mesh();
 // debug hook for E2E tests; harmless in prod
@@ -21,6 +22,8 @@ let recording = false;
 
 document.addEventListener('DOMContentLoaded', async () => {
   initUI();
+  initTheme();
+  bindThemePicker(document.getElementById('theme-picker'));
   startVersionCheck();
   showScreen('join-screen');
 
