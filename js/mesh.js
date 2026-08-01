@@ -6,19 +6,27 @@ const RTC_CONFIG = {
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
     { urls: 'stun:stun.cloudflare.com:3478' },
+    // Metered Open Relay — :443 已拒绝连接，改走仍可用的 :80 + global 入口
     {
       urls: [
         'turn:openrelay.metered.ca:80',
-        'turn:openrelay.metered.ca:443',
-        'turn:openrelay.metered.ca:443?transport=tcp'
+        'turn:openrelay.metered.ca:80?transport=tcp',
+        'turn:global.relay.metered.ca:80',
+        'turn:global.relay.metered.ca:443',
+        'turn:global.relay.metered.ca:443?transport=tcp',
+        'turns:global.relay.metered.ca:443'
       ],
       username: 'openrelayproject',
       credential: 'openrelayproject'
     },
+    // ExpressTURN 免费档 — 3478/3480/80/443 均可达
     {
       urls: [
         'turn:relay1.expressturn.com:3478',
-        'turn:relay1.expressturn.com:3480'
+        'turn:relay1.expressturn.com:3480',
+        'turn:relay1.expressturn.com:80',
+        'turn:relay1.expressturn.com:443',
+        'turn:relay1.expressturn.com:443?transport=tcp'
       ],
       username: 'efPN3HM65DA9PSWLQE',
       credential: 'kQH5JRZqCQRWKkNH'

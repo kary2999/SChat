@@ -1,4 +1,7 @@
+// 公开 WebTorrent WSS tracker（按实测可用性排序，多路并行冗余）
 const TRACKERS = [
+  'wss://tracker.btorrent.xyz',
+  'wss://open.ftorrent.com',
   'wss://tracker.openwebtorrent.com',
   'wss://tracker.webtorrent.dev'
 ];
