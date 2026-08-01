@@ -253,6 +253,41 @@ body::before {
   font-weight: 700;
 }
 
+/* ======= UPDATE BANNER ======= */
+.update-banner {
+  position: fixed;
+  top: 0; left: 0; right: 0;
+  z-index: 10000;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px 14px;
+  background: linear-gradient(90deg, #0a2818, #122a1c);
+  border-bottom: 1px solid var(--green);
+  box-shadow: 0 4px 24px rgba(0, 255, 156, 0.25);
+  color: var(--text);
+  font-size: 12px;
+  letter-spacing: 0.5px;
+}
+.update-banner.visible { display: flex; }
+.update-banner b { color: var(--yellow); font-weight: 700; }
+.update-banner-btn {
+  border: 1px solid var(--green);
+  background: var(--green-ghost);
+  color: var(--green);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 14px;
+  cursor: pointer;
+  letter-spacing: 1px;
+}
+.update-banner-btn:hover {
+  background: rgba(0, 255, 156, 0.18);
+  box-shadow: 0 0 12px rgba(0, 255, 156, 0.35);
+}
+
 /* ======= CHAT SCREEN ======= */
 #chat-screen { background: var(--bg); }
 

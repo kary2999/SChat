@@ -6,6 +6,7 @@ import {
   addVideoTile, removeVideoTile, clearAllTiles,
   setOwnerBadge, renderPeerList, togglePeerPanel, onKickPeer
 } from './ui.js';
+import { startVersionCheck } from './version.js';
 
 const mesh = new Mesh();
 // debug hook for E2E tests; harmless in prod
@@ -20,6 +21,7 @@ let recording = false;
 
 document.addEventListener('DOMContentLoaded', async () => {
   initUI();
+  startVersionCheck();
   showScreen('join-screen');
 
   const savedNick = localStorage.getItem('schat_nick') || '';
